@@ -1,4 +1,6 @@
-from scapy.all import *  # Immports Scapy
+from scapy.all import *
+from scapy_http.http import *
+import struct
 import argparse  # Importing argument parser for commandline
 import re  # Importing regex
 
@@ -66,11 +68,11 @@ def getverbose():
 
 
 # This function is WIP and not implemented yet
-#def getparse():
+def getparse():
     # Looks for parsemode in the arglist and cleans up any unwanted special characters using REGEX
-    # condition = re.sub(r'[^\w]', '', str(getargs()['parsemode']))
+    condition = re.sub(r'[^\w]', '', str(getargs()['parsemode']))
     # After the string has been cleanup, then we return the string specified
-    # return condition
+    return condition
 
 
 # Get args is perhaps one of the most important functions in this entire code
@@ -83,36 +85,34 @@ def getargs():
                         metavar="livecapture", default="False",
                         help="Gathers new data as soon as the program starts. \n "
                              "If set to false, it will read whatever file you put under --filename <target> \n"
-                             "Default: True")
-
+                             "Default: False")
     parser.add_argument("-pc", "--packetcount", type=str, nargs=1,
                         metavar="packetcount", help="Sets the packet count before program stops. Default: 200",
                         default="200")
 
     parser.add_argument("-fn", "--filename", type=str, nargs=1,
-                        metavar='filename', default="OnePacket.pcap",
+                        metavar='filename', default="Sketchy Stuff.pcap",
                         help="Name of the file. Default: Data.pcap")
 
     parser.add_argument("-t", "--target", type=str, nargs=1,
-                        metavar='target', default="all",
+                        metavar='target', default="ARP",
                         help="Filter by a certain target [TCP, UDP, DNS, ARP, all or *] Default: all")
 
     parser.add_argument("-p", "--parsemode", type=str, nargs=1,
                         metavar='parsemode', default="True",
-                        help="Should the program parse the packets? Default: False")
+                        help="Should the program parse the packets? Default: True")
 
     parser.add_argument("-v", "--verbose", type=str, nargs=1,
-                        metavar='verbose', default="True",
+                        metavar='verbose', default="False",
                         help="Should the program give more detail? Default: False")
 
     args = vars(parser.parse_args())  # We gather the arguments above and turn them into variables
     return args  # Returns the args as a list so we can parse later
 
 
-# This is the function that is called for in order to get packets
 def getpackets():
     if getenablelivecapture():  # If we're capturing data live..
-        packets = sniff(getpacketcount())  # Then start sniffing the packets at the specified packetcount
+        packets = sniff(count=getpacketcount(), filter=gettarget())  # sniff packets at the specified packetcount
         wrpcap(getfilename(), packets)  # Then write the data into the specified filename and the packets
         return packets  # Return all the packets recieved just now
     else:
@@ -132,8 +132,7 @@ def filterpackets(packets):
             else:
                 # Show the summary of that packet
                 packetinfo = str(pkt.summary())
-
-            # Filtering stuff below
+                # Filtering stuff below
             if gettarget() == "TCP":
                 if findwholeword("TCP")(packetinfo):
                     print(packetinfo)
@@ -162,7 +161,6 @@ def filterpackets(packets):
                 print(packetinfo)
             else:
                 print("[Warning] Could not get target, please enter a valid target")
-
         # Incase the packet is corrupted, just skip to the next packet
         except AttributeError:
             continue
@@ -171,24 +169,23 @@ def filterpackets(packets):
 # All definitions below besides the main are WIP functions.
 # They will be ready in a later version
 def parsepacket(packets):
+    print()
     for counter, pkt in enumerate(packets):
-        print(
-            " ############ Packet #{} ############# \n".format(counter + 1),
-            "############## IP Info ############# \n",
-            "IP version: {} \n".format(getipversion(pkt)),
-            "Internet Header Length: {} \n".format(getinternetheaderlength(pkt)),
-            "Type of service: ({}) \n".format(gettypeofservice(pkt)),
-            "Protocol: {} \n".format(getprotocol(pkt)),
-        )
-        protocolcheck(getprotocol(pkt))
-        print()
-        print(pkt.show())
+        protocolcheck(pkt, counter)
+        # print(pkt.show())
 
 
-def protocolcheck(packet):
-    if packet.haslayer(IP):
-        if getprotocol(packet) == "TCP":
+def protocolcheck(packet, counter):
+    if packet.haslayer(TCP):
+        if getprotocol(packet) == "TCP" and gettarget() == "TCP":
             print(
+                " ############ Packet #{} ############# \n".format(counter + 1),
+                "############## IP Info ############# \n",
+                "IP version: {} \n".format(getipversion(packet)),
+                "Internet Header Length: {} \n".format(getinternetheaderlength(packet)),
+                "Type of service: {} \n".format(gettypeofservice(packet)),
+                "Protocol: {} \n".format(getprotocol(packet)),
+                "\n",
                 "############## TCP Info ############# \n",
                 "Source Port: {}\n".format(getsport(packet)),
                 "Destination Port: {}\n".format(getdport(packet)),
@@ -198,66 +195,151 @@ def protocolcheck(packet):
                 "Flags: {}\n".format(getflags(packet)),
                 "Checksum: {}\n".format(getchksum(packet)),
             )
+    elif packet.haslayer(ARP):
+        if 'ARP' in packet and gettarget() == "ARP":
+            print(
+                " ############ Packet #{} ############# \n".format(counter + 1),
+                "############## IP Info ############# \n",
+                "IP version: {} \n".format(getipversion(packet)),
+                "Internet Header Length: {} \n".format(getinternetheaderlength(packet)),
+                "Type of service: {} \n".format(gettypeofservice(packet)),
+                "Protocol: {} \n".format(getprotocol(packet)),
+                "\n",
+                "############## ARP Info ############# \n",
+                "Hardware type: {}\n".format(gethwtype(packet)),
+                "Protocol type: {}\n".format(getprototype(packet)),
+                "Hardware Length: {}\n".format(gethwlength(packet)),
+                "Protocol length: {}\n".format(getprotolength(packet)),
+                "Operation: {}\n".format(getoperation(packet)),
+                "Hardware source: {}\n".format(gethwsource(packet)),
+                "Protocol source: {}\n".format(getprotosource(packet)),
+                "Hardware destination: {}\n".format(gethwdest(packet)),
+                "Protocol destination: {}\n".format(getprotodest(packet)),
+            )
+            print("########### ARP Connection ###########")
+            print(arp_display(packet))
+            print()
+            ###[ ARP ]###
+            # hwtype = 0x1
+            # ptype = 0x800
+            # hwlen = 6
+            # plen = 4
+            # op = who - has
+            # hwsrc = d0:e1: 40:9f: b5:7a
+            # psrc = 172.28.96.25
+            # hwdst = 00:00: 00:00: 00:00
+            # pdst = 172.28.96.132
+
+
+def arp_display(packet):
+    if packet[ARP].op == 1:
+        return "Request: {} is asking about {}".format(packet[ARP].psrc, packet[ARP].pdst)
+    elif packet[ARP].op == 2:
+        return "Response: {} has address {}".format(packet[ARP].hwsrc, packet[ARP].psrc)
+
+
+def gethwtype(packet):
+    hardwaretype = packet[ARP].hwtype
+
+    if hardwaretype == 1:
+        return str(hardwaretype) + " [Ethernet]"
+
+    else:
+        return str(packet[ARP].hwtype)
+
+
+def getprototype(packet):
+    return str(packet[ARP].ptype) + " [IP]"
+
+
+def gethwlength(packet):
+    return str(packet[ARP].hwlen) + " bits"
+
+
+def getprotolength(packet):
+    return str(packet[ARP].plen) + " bits"
+
+
+def getoperation(packet):
+    operation = packet[ARP].op
+
+    if operation == 1:
+        return str(operation) + " [Request]"
+    elif operation == 2:
+        return str(operation) + " [Reply]"
+    else:
+        return str(operation)
+
+
+def gethwsource(packet):
+    return str(packet[ARP].hwsrc)
+
+
+def getprotosource(packet):
+    return str(packet[ARP].psrc)
+
+
+def gethwdest(packet):
+    return str(packet[ARP].hwdst)
+
+
+def getprotodest(packet):
+    return str(packet[ARP].pdst)
 
 
 def getsport(packet):
-    if packet.haslayer(IP):
-        if packet[0][IP].dport == "https":
-            return "https (Port 443)"
-        if packet[0][IP].dport == "http":
-            return "http (Port 80)"
-        else:
-            return str(packet[0][IP].sport)
+    if packet.haslayer(TCP):
+        return str(packet[0][TCP].sport)
+    if packet.haslayer(ARP):
+        return str(packet[0][ARP].sport)
 
 
 def getdport(packet):
-    if packet.haslayer(IP):
-        if packet[0][IP].dport == "https":
+    if packet.haslayer(TCP):
+        if packet[TCP].dport == 443:
             return "https (Port 443)"
-        if packet[0][IP].dport == "http":
+        if packet[TCP].dport == 80:
             return "http (Port 80)"
         else:
-            return str(packet[0][IP].dport)
+            return str(packet[TCP].dport)
 
 
 def getsequence(packet):
-    if packet.haslayer(IP):
-        return str(packet[0][IP].seq)
+    if packet.haslayer(TCP):
+        return str(packet[TCP].seq)
 
 
 def getacknowledgement(packet):
-    if packet.haslayer(IP):
-        return str(packet[0][IP].ack)
+    if packet.haslayer(TCP):
+        return str(packet[TCP].ack)
 
 
 def getdataoffset(packet):
-    if packet.haslayer(IP):
-        return str(packet[0][IP].ack) + "[" + str(packet[0][IP].dataofs * 4) + " Bytes]"
+    if packet.haslayer(TCP):
+        return str(packet[TCP].ack) + " [" + str(packet[TCP].dataofs * 4) + " Bytes]"
 
 
 def getflags(packet):
-    if packet.haslayer(IP):
-        if packet[0][IP].flags == "PA":
+    if packet.haslayer(TCP):
+        if str(packet[TCP].flags) == "PA":
             return "PA [PSH+ACK] [Pushing the acknowledgement]"
+        elif str(packet[TCP].flags) == "A":
+            return "A [Acknowledgement]"
         else:
-            return "Let me know to add this new flag! " + str(packet[0][IP].flags)
+            return "Let me know to add this new flag! " + str(packet[0][TCP].flags)
 
 
 def getchksum(packet):
-    if packet.haslayer(IP):
-        return str(packet[0][IP].chksum)
-
+    if packet.haslayer(TCP):
+        return str(packet[TCP].chksum)
 
 
 # A feature that is currently being worked on. Not yet used in main code yet
 def getipversion(packet):
     if packet.haslayer(IP):
-        if packet[0][IP].version == 4:
-            return "IPv4"
-        elif packet[0][IPv6].version == 6:
-            return "IPv6"
+        return "IPv4"
     else:
-        return "[Missing IP layer]"
+        return "IPv6"
 
 
 # A feature that is currently being worked on. Not yet used in main code yet
@@ -273,26 +355,24 @@ def getinternetheaderlength(packet):
 def gettypeofservice(packet):
     if packet.haslayer(IP):
         tos = str(packet[0][IP].tos)
-        if tos in ("00", "04", "08", "0C", "10"):
-            return "Routine"
+        if tos in ("0", "04", "08", "0C", "10"):
+            return str(packet[0][IP].tos) + " (Routine)"
         elif tos in ("20", "28", "30", "38"):
-            return "Priority"
+            return str(packet[0][IP].tos) + " (Priority)"
         elif tos in ("40", "48", "50", "58"):
-            return "Immediate"
+            return str(packet[0][IP].tos) + " (Immediate)"
         elif tos in ("60", "68", "70", "78"):
-            return "Flash"
+            return str(packet[0][IP].tos) + " (Flash)"
         elif tos in ("80", "88", "90", "98"):
-            return "FlashOverride"
+            return str(packet[0][IP].tos) + " (FlashOverride)"
         elif tos in ("A0", "B0", "B8"):
-            return "Critical"
+            return str(packet[0][IP].tos) + " (Critical"
         elif tos == "C0":
-            return "InterNetworkControl"
+            return str(packet[0][IP].tos) + " (InterNetworkControl)"
         elif tos == "E0":
-            return "NetworkControl"
+            return str(packet[0][IP].tos) + " (NetworkControl)"
         else:
-            return "[Could not find type of service]"
-    else:
-        return "[Missing IP layer]"
+            return "[Could not find type of service]" + str(packet[0][IP].tos)
 
 
 # A feature that is currently being worked on. Not yet used in main code yet
@@ -315,7 +395,7 @@ def getprotocol(packet):
         else:
             print("Could not recognize a protocol. Here is the number: " + str(packet[0][IP].proto))
     else:
-        print("[Missing IP layer]")
+        return None
 
 
 # Main function, pretty much prints out the variable settings.
@@ -329,10 +409,11 @@ def main():
     print("Packet count limit: " + str(getpacketcount()))
     print("File name: " + getfilename())
     print("Filtering by: " + str(gettarget()))
-
     print()
-    filterpackets(getpackets())
-    # parsepacket(getpackets())
+    if getparse():
+        parsepacket(getpackets())
+    else:
+        filterpackets(getpackets())
 
 
 # Runs the main
