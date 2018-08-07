@@ -11,6 +11,6 @@ This is an easy to use tool that lets you:
   
 # TODO:
 
-Implement ARP Spoofing detection that can be used in both monitoring and reading
-Add more descriptive details for code
-Finish reading ARP traffic and ARP attack code
+- Implement ARP Spoofing detection that can be used in both monitoring and reading
+- Add more descriptive details for code
+- Finish reading ARP traffic and ARP attack code
