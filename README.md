@@ -8,9 +8,9 @@ This is an easy to use tool that lets you:
   - Monitor ARP traffic on a live network
   - Read ARP traffic from a .PCAP file
   - Perform an ARP attack on a live network
+  - Detect ARP Spoofing 
   
 # TODO:
-
-- Implement ARP Spoofing detection that can be used in both monitoring and reading
 - Add more descriptive details for code
-- Finish reading ARP traffic and ARP attack code
+- Bug fixes
+- Optimization
