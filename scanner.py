@@ -1,11 +1,11 @@
 """
 ARP Scanner created by Team Hercules in Cyberdefenders
-Version 1.00 (8/12/2018)
+Version 1.01(8/12/2018)
 """
 import argparse  # Importing argument parser for commandline
 import time
 from multiprocessing import Process
-from scapy.all import re, sniff, wrpcap, rdpcap, srp, send, conf
+from scapy.all import *
 from netifaces import interfaces, ifaddresses
 
 
@@ -333,7 +333,7 @@ def main():
                     time.sleep(1)
                     print("[*] Scanning... This might take some time")
                     parsepacket(getpackets(False, None, localfilename), boolcleanup(localverbose))
-                    time.sleep(1)
+                    time.sleep(.5)
                     print()
                     time.sleep(1)
                     runagainchoice = input("[?] Run again? Default: No")
@@ -352,7 +352,7 @@ def main():
                     time.sleep(1)
                     print("[*] Scanning... This might take some time")
                     filterpackets(getpackets(False, None, localfilename))
-                    time.sleep(1)
+                    time.sleep(.5)
                     print()
                     time.sleep(1)
                     runagainchoice = input("[?] Run again? Default: No")
@@ -387,8 +387,7 @@ def main():
                     localfilename = filenamecleanup(filechoice)
                     print("[*] Filename has been set to " + localfilename)
                     break
-            # PACKET COUNT
-            time.sleep(1)
+            time.sleep(.5)
             print()
             time.sleep(1)
             print("[?] How many packets should the program collect? Default: " +
@@ -469,7 +468,20 @@ def main():
                 print()
                 print("[Linux] You can type ifconfig in command prompt to get the IPs required")
                 target_ip = input("[?] Target IP: ")
+                if target_ip == "":
+                    time.sleep(.5)
+                    print("[!] Nothing was entered... Returning to menu")
+                    time.sleep(1)
+                    print()
+                    break
+
                 gateway_ip = input("[?] Gateway IP: ")
+                if gateway_ip == "":
+                    time.sleep(.5)
+                    print("[!] Nothing was entered... Returning to menu")
+                    time.sleep(1)
+                    print()
+                    break
 
                 print(("[*] Setting up %s" % localinterface))
 
@@ -504,7 +516,7 @@ def main():
                 except ValueError:
                     print("[*] Using default setting [Packet count: " + str(localpacketcount) + "]")
 
-                time.sleep(1)
+                time.sleep(.5)
                 print()
                 time.sleep(1)
                 print("[?] What is the filename of the pcap file? Default: " + str(
