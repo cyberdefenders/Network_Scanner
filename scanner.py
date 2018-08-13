@@ -1,9 +1,16 @@
-from scapy.all import *
 import argparse  # Importing argument parser for commandline
-import re  # Importing regex
+import logging
+from netifaces import AF_INET, ifaddresses, interfaces
+import os
+import sys
+import time
 from multiprocessing import Process
-import os, time, netifaces, sys, logging
+import winreg as wr
+from pprint import pprint
 from sys import platform
+
+from scapy.all import *
+
 
 # A useful function that searches for a certain word in a string and returns it
 def findwholeword(arg):
@@ -235,42 +242,24 @@ def poison_target(gateway_ip, gateway_mac, target_ip, target_mac):
     print("[*] ARP poison attack finished.")
     return
 
+def getbroadcast(arg):
+    try:
+        broadcast = arg[AF_INET][0]["broadcast"]
+        return broadcast
+    except KeyError:
+        print("Cannot read address address on interface {}".format(interface))
 
-def check_spoof(source, mac, destination):
-    # Function checks if a specific ARP reply is part of an ARP spoof attack or not
-    if destination == broadcast:
-        if not mac in replies_count:
-            replies_count[mac] = 0
+def getlocal_ip(arg):
+    try:
+        local_ip = arg[AF_INET][0]["addr"]
+        return local_ip
+    except KeyError:
+        print("Cannot read address address on interface {}".format(interface))
 
-    if not source in requests and source != local_ip:
-        if not mac in replies_count:
-            replies_count[mac] = 0
-        else:
-            replies_count[mac] += 1
-        # Logs ARP Reply
-        print("ARP replies detected from MAC {}. Request count {}".format(mac, replies_count[mac]))
 
-        if (replies_count[mac] > request_threshold) and (not mac in notification_issued):
-            # Check number of replies reaches threshold or not, and whether or not we have sent a notification for this MAC addr
-            logging.error("ARP Spoofing Detected from MAC Address {}".format(mac)) # Logs the attack in the log file
-            # Issue OS Notification
-            # issue_os_notification("ARP Spoofing Detected", "The current network is being attacked.", "ARP Spoofing Attack Detected from {}.".format(mac))
-            # Add to sent list to prevent repeated notifications.
-            # notification_issued.append(mac)
-    else:
-        if source in requests:
-            requests.remove(source)
-
-def packet_filter (packet):
-    # Retrieve necessary parameters from packet
-    source = packet.sprintf("%ARP.psrc%")
-    dest = packet.sprintf("%ARP.pdst%")
-    source_mac = packet.sprintf("%ARP.hwsrc%")
-    operation = packet.sprintf("%ARP.op%")
-    if source == local_ip:
-        requests.append(dest)
-    if operation == 'is-at':
-        return check_spoof (source, source_mac, dest)
+def getaddrs(arg):
+    addrs = arg
+    return addrs
 
 livecapture = boolcleanup(getargs()['livecapture'])
 packetcount = int(textcleanup(getargs()['packetcount']))
@@ -279,13 +268,20 @@ parsemode = boolcleanup(getargs()['parsemode'])
 verbose = boolcleanup(getargs()['verbose'])
 input_var = boolcleanup(getargs()['input'])
 
+# Number of ARP replies received from a specific mac before flagging it
+request_threshold = 10
+
+requests = []
+replies_count = {}
+interface = conf.iface
+
 
 # Main function, pretty much prints out the variable settings.
 def main():
     localpacketcount = packetcount
     localverbose = verbose
     localfilename = filename
-    interface = conf.iface
+    localinterface = conf.iface
     while True:
         print("[*] Type the number for the option you want to choose")
         print("[1] ARP File Analysis")
@@ -475,14 +471,14 @@ def main():
                     temp = False
                     continue
 
-        elif textcleanup(decision) == "2":
+        elif textcleanup(decision) == "3":
             while True:
                 print()
                 print("[Windows] You can type ipconfig in command prompt to get the IPs required")
                 target_ip = input("[?] Target IP: ")
                 gateway_ip = input("[?] Gateway IP: ")
 
-                print(("[*] Setting up %s" % interface))
+                print(("[*] Setting up %s" % localinterface))
 
                 gateway_mac = get_mac(gateway_ip)
 
@@ -530,13 +526,13 @@ def main():
 
                 # start poison thread
                 poison_thread = Process(target=poison_target,
-                                                 args=(gateway_ip, gateway_mac, target_ip, target_mac))
+                                        args=(gateway_ip, gateway_mac, target_ip, target_mac))
                 poison_thread.start()
 
                 try:
                     print(("[*] Starting sniffer for %d packets" % int(localpacketcount)))
                     bpf_filter = "ip host %s" % target_ip
-                    packets = sniff(count=int(localpacketcount), filter=bpf_filter, iface=interface)
+                    packets = sniff(count=int(localpacketcount), filter=bpf_filter, iface=localinterface)
                     poison_thread.terminate()
 
                     # write out the captured packets
@@ -566,28 +562,102 @@ def main():
                     break
         else:
             while True:
-                # Number of ARP replies received from a specific mac before flagging it
-                request_threshold = 10
+                print()
+                # Read available network interfaces
+                available_interfaces = interfaces()
+                # Ask user for desired interface
 
+                while True:
+                    print("[*] Please select the interface you wish to use:")
+
+                    list = []
+                    numcounter = 0
+                    for counter, getinterfaces in enumerate(available_interfaces):
+                        list.append(getinterfaces[1:-1])
+                        temp = str(getinterfaces[1:-1])
+                        numcounter = counter
+                        print("[" + str(numcounter + 1) + "] " + temp)
+
+                    value = input("[?] ")
+                    if int(value) <= numcounter + 1:
+                        localinterface = list[int(value) - 1]
+                        break
+                    else:
+                        time.sleep(1)
+                        print("[!] Please use a real value")
+                        time.sleep(1)
+                        print()
+                        continue
+
+                # Check if specified interface is valid
+                if not localinterface in available_interfaces:
+                    print()
+                    time.sleep(1)
+                    print("[!] Interface {} not available.".format(localinterface))
+                    time.sleep(1)
+                    print()
+                    break
                 # Retrieve network addresses (IP, broadcast) from the network interfaces
-                addrs = netifaces.ifaddresses(interface)
+                addrs = ifaddresses(localinterface)
 
-                print("[*] Retrieving addresses and broadcasts on interface...")
                 try:
-                    local_ip = addrs[netifaces.AF_INET][0]["addr"]
-                    broadcast = addrs[netifaces.AF_INET][0]["broadcast"]
+                    local_ip = addrs[AF_INET][0]["addr"]
+                    broadcast = addrs[AF_INET][0]["broadcast"]
                 except KeyError:
                     print("[!] Cannot read address/broadcast address on interface {}".format(interface))
-                    time.sleep(2)
+                    print()
                     break
 
-                requests = []
-                replies_count = {}
+                try:
+                    print("[!] ARP Spoofing Scan has begun on {}".format(local_ip))
+                    print("[*] Press CNTRL+C to stop the scan")
 
-                print("ARP Spoofing Scan has begun on {}".format(local_ip))
+                    def check_spoof(source, source_mac, dest):
+                        # Function checks if a specific ARP reply is part of an ARP spoof attack or not
+                        if dest == broadcast:
+                            if not source_mac in replies_count:
+                                replies_count[source_mac] = 0
+
+                        if not source in requests and source != local_ip:
+                            if not source_mac in replies_count:
+                                replies_count[source_mac] = 0
+                            else:
+                                replies_count[source_mac] += 1
+                            # Logs ARP Reply
+                            print("[*] ARP replies detected from MAC {}. Request count {}".format(source_mac, replies_count[
+                                source_mac]))
+
+                            if replies_count[source_mac] > request_threshold:
+                                # Check number of replies reaches threshold or not, and whether or not we have sent a notification for this MAC addr
+                                print("[!!!] ARP Spoofing Detected from MAC Address {}".format(
+                                    source_mac))  # Logs the attack in the log file
+                                # Issue OS Notification
+                                # issue_os_notification("ARP Spoofing Detected", "The current network is being attacked.", "ARP Spoofing Attack Detected from {}.".format(mac))
+                                # Add to sent list to prevent repeated notifications.
+                                # notification_issued.append(mac)
+                        else:
+                            if source in requests:
+                                requests.remove(source)
+
+                    def packet_filter(packet):
+                        # Retrieve necessary parameters from packet
+                        source = packet.sprintf("%ARP.psrc%")
+                        dest = packet.sprintf("%ARP.pdst%")
+                        source_mac = packet.sprintf("%ARP.hwsrc%")
+                        operation = packet.sprintf("%ARP.op%")
+                        if source == local_ip:
+                            requests.append(dest)
+                        if operation == 'is-at':
+                            return check_spoof(source, source_mac, dest)
+
+                    sniff(filter="arp", prn=packet_filter, store=0)
+
+                except KeyboardInterrupt:
+                    print("[!] Stopping scan..")
+                    time.sleep(2)
+                    break
 
 
 # Runs the main
 if __name__ == "__main__":
     main()
-
