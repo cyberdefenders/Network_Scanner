@@ -1,14 +1,6 @@
 import argparse  # Importing argument parser for commandline
-import logging
 from netifaces import AF_INET, ifaddresses, interfaces
-import os
-import sys
-import time
 from multiprocessing import Process
-import winreg as wr
-from pprint import pprint
-from sys import platform
-
 from scapy.all import *
 
 
@@ -123,18 +115,7 @@ def protocolcheck(packet, counter, verbosesetting):
             print("########### ARP Connection [Packet #{}] ###########".format(counter + 1))
             print(arp_display(packet))
             print()
-        ###[ ARP ]###
-        # hwtype = 0x1
-        # ptype = 0x800
-        # hwlen = 6
-        # plen = 4
-        # op = who - has
-        # hwsrc = d0:e1: 40:9f: b5:7a
-        # psrc = 172.28.96.25
-        # hwdst = 00:00: 00:00: 00:00
-        # pdst = 172.28.96.132
-    # else:
-        # print("No ARP packets found in " + filename)
+
 
 def arp_display(packet):
     if packet[ARP].op == 1:
@@ -242,24 +223,6 @@ def poison_target(gateway_ip, gateway_mac, target_ip, target_mac):
     print("[*] ARP poison attack finished.")
     return
 
-def getbroadcast(arg):
-    try:
-        broadcast = arg[AF_INET][0]["broadcast"]
-        return broadcast
-    except KeyError:
-        print("Cannot read address address on interface {}".format(interface))
-
-def getlocal_ip(arg):
-    try:
-        local_ip = arg[AF_INET][0]["addr"]
-        return local_ip
-    except KeyError:
-        print("Cannot read address address on interface {}".format(interface))
-
-
-def getaddrs(arg):
-    addrs = arg
-    return addrs
 
 livecapture = boolcleanup(getargs()['livecapture'])
 packetcount = int(textcleanup(getargs()['packetcount']))
@@ -623,18 +586,12 @@ def main():
                                 replies_count[source_mac] = 0
                             else:
                                 replies_count[source_mac] += 1
-                            # Logs ARP Reply
+                            # Prints ARP reply
                             print("[*] ARP replies detected from MAC {}. Request count {}".format(source_mac, replies_count[
                                 source_mac]))
 
                             if replies_count[source_mac] > request_threshold:
-                                # Check number of replies reaches threshold or not, and whether or not we have sent a notification for this MAC addr
-                                print("[!!!] ARP Spoofing Detected from MAC Address {}".format(
-                                    source_mac))  # Logs the attack in the log file
-                                # Issue OS Notification
-                                # issue_os_notification("ARP Spoofing Detected", "The current network is being attacked.", "ARP Spoofing Attack Detected from {}.".format(mac))
-                                # Add to sent list to prevent repeated notifications.
-                                # notification_issued.append(mac)
+                                print("[!!!] ARP Spoofing Detected from MAC Address {}".format(source_mac))
                         else:
                             if source in requests:
                                 requests.remove(source)
