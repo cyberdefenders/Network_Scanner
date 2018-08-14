@@ -1,12 +1,12 @@
 """
 ARP Scanner created by Team Hercules in Cyberdefenders
-Version 1.01(8/12/2018)
+Version 1.02(8/12/2018)
 """
 import argparse  # Importing argument parser for commandline
 import time
 from multiprocessing import Process
 from scapy.all import *
-from netifaces import interfaces, ifaddresses
+import netifaces
 
 
 def findwholeword(arg):
@@ -275,7 +275,7 @@ def main():
         print("[4] ARP Spoofing Detector")
 
         decision = input("[?] ")
-        if decision.lower() in ("exit", "quit"):
+        if decision in ("exit", "quit"):
             exit()
 
         elif textcleanup(decision) == "1":
@@ -570,15 +570,15 @@ def main():
             while True:
                 print()
                 # Read available network interfaces
-                available_interfaces = interfaces()
+                available_interfaces = netifaces.interfaces()
                 while True:
                     print("[*] Please select the interface you wish to use:")
 
                     interfacelist = []
                     numcounter = 0
                     for counter, getinterfaces in enumerate(available_interfaces):
-                        interfacelist.append(getinterfaces[1:-1])
-                        temp = str(getinterfaces[1:-1])
+                        interfacelist.append(getinterfaces)
+                        temp = str(getinterfaces)
                         numcounter = counter
                         print("[" + str(numcounter + 1) + "] " + temp)
 
@@ -602,11 +602,11 @@ def main():
                     print()
                     break
                 # Retrieve network addresses (IP, broadcast) from the network interfaces
-                addrs = ifaddresses(localinterface)
+                addrs = netifaces.ifaddresses(localinterface)
 
                 try:
-                    local_ip = addrs[AF_INET][0]["addr"]
-                    broadcast = addrs[AF_INET][0]["broadcast"]
+                    local_ip = addrs[netifaces.AF_INET][0]["addr"]
+                    broadcast = addrs[netifaces.AF_INET][0]["broadcast"]
                 except KeyError:
                     print("[!] Cannot read address/broadcast address on interface {}"
                           .format(INTERFACE))
