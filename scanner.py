@@ -37,7 +37,7 @@ def filenamecleanup(arg):
     # Looks for filename in the arglist and cleans up any unwanted special characters using REGEX
     cleanfilename = re.sub(r'[^\w. ]', '', str(arg))
     # After the string has been cleanup, then we return the string specified
-    return "data/" + str(cleanfilename)
+    return "data/" + str(cleanfilename) + ".pcap"
 
 
 def getargs():
@@ -290,7 +290,7 @@ def main():
                       + str(localfilename) + " (Value: [Name])")
                 filechoice = input()
 
-                if filechoice == "":
+                if filechoice in "":
                     print("[*] Using default filename: " + localfilename)
                     break
                 else:
